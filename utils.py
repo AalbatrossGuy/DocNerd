@@ -8,6 +8,10 @@ START_SEQUENCE = re.compile(r"^\s*#\s*DOCSTRING\s*START\s*$", re.IGNORECASE)
 END_SEQUENCE = re.compile(r"^\s*#\s*DOCSTRING\s*END\s*$", re.IGNORECASE)
 FUNCTION_SEQUENCE = re.compile(r"^\s*(async\s+def|def)\s+\w+\s*\(.*\)\s*:\s*$")
 PYTHON_DOCSTRING_SEQUENCE = re.compile(r'^\s*(?P<q>["\']{3})')
+FUNCTION_SEQUENCE_START = re.compile(
+    r'^\s*(async\s+def|def)\s+[A-Za-z_][A-Za-z0-9_]*\s*\('
+)
+FUNCTION_SEQUENCE_END = re.compile(r'\)\s*(->\s*[^:]+)?\s*:\s*(#.*)?$')
 
 
 def find_sequence_pairs(file_lines: str):
@@ -33,9 +37,28 @@ def function_line(
     start_line: int,
     end_line: int
 ) -> None | int:
-    for index in range(start_line, end_line + 1):
-        if FUNCTION_SEQUENCE.match(file_lines[index]):
-            return index
+    # for index in range(start_line, end_line + 1):
+    #     if FUNCTION_SEQUENCE.match(file_lines[index]):
+    #         return index
+    # return None
+
+    while start_line <= end_line:
+        line = file_lines[start_line]
+        if FUNCTION_SEQUENCE.match(line):
+            return start_line
+
+        if FUNCTION_SEQUENCE_START.match(line):
+            paren_balance = line.count('(') - line.count(')')
+            j = start_line
+            while j <= end_line:
+                if j > start_line:
+                    paren_balance += file_lines[j].count(
+                        '(') - file_lines[j].count(')')
+                if paren_balance <= 0 and FUNCTION_SEQUENCE_END.search(file_lines[j]):
+                    return j
+                j += 1
+            return None
+        start_line += 1
     return None
 
 
