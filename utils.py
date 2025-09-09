@@ -69,3 +69,27 @@ def make_indent_after_function(file_lines: str, function_line: int) -> int:
         if indent > function_indent:
             return indent
     return function_indent + 4
+
+
+def insert_docstring_in_function(
+    file_lines: str,
+    function_index: int,
+    docstring: str
+) -> int:
+    indent_space = make_indent_after_function(
+        file_lines=file_lines,
+        function_line=function_index
+    )
+    indent = " " * indent_space
+    code_block: list = [
+        f"{indent}\"\"\"\n",
+        * [
+            (indent + line + ("\n" if not line.endswith("\n") else ""))
+            for line in docstring.splitlines()
+        ],
+        "\n" if not docstring.endswith("\n") else "",
+        f"{indent}\"\"\"\n",
+    ]
+
+    file_lines[function_index + 1: function_index + 1] = code_block
+    return len(code_block)
