@@ -98,3 +98,37 @@ def insert_docstring_in_function(
 
     file_lines[function_index + 1: function_index + 1] = code_block
     return len(code_block)
+
+
+def strip_existing_docstring(file_lines, function_index):
+
+    insert_at: int = function_index + 1
+    while insert_at < len(file_lines) and (file_lines[insert_at].strip() == ""
+                                           or file_lines[insert_at].lstrip().startswith("#")):
+        insert_at += 1
+    if insert_at < len(file_lines) and \
+            PYTHON_DOCSTRING_SEQUENCE.match(file_lines[insert_at].lstrip()):
+        quote = PYTHON_DOCSTRING_SEQUENCE.match(
+            file_lines[insert_at].lstrip()).group("q")
+        j = insert_at + 1
+        while j < len(file_lines):
+            if file_lines[j].lstrip().startswith(quote):
+                break
+            j += 1
+        if j < len(file_lines):
+            del file_lines[insert_at: j + 1]
+            return True
+    return False
+
+
+def remove_docstring_sequences(file_path: str):
+    with open(file_path, "r", encoding="utf-8") as file:
+        file_lines = file.readlines()
+
+    new_lines = [
+        line for line in file_lines
+        if not (START_SEQUENCE.match(line) or END_SEQUENCE.match(line))
+    ]
+
+    with open(file_path, "w", encoding="utf-8") as file:
+        file.writelines(new_lines)
