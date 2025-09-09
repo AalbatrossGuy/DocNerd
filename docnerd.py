@@ -7,9 +7,10 @@ import click
 from groq import Groq
 from textwrap import dedent
 from dotenv import load_dotenv
+from utils import remove_docstring_sequences
 from utils import insert_docstring_in_function
-from utils import block_has_existing_docstring
 from utils import find_sequence_pairs, function_line
+from utils import block_has_existing_docstring, strip_existing_docstring
 
 load_dotenv()
 
@@ -54,7 +55,8 @@ def process_file(
     file_path: str,
     model: str = "llama-3.1-8b-instant",
     dry_run: bool = False,
-    do_backup: bool = True
+    do_backup: bool = True,
+    replace_existing_docstring: bool = False
 ):
     with open(file_path, "r", encoding="utf-8") as file:
         file_lines = file.readlines()
@@ -82,9 +84,22 @@ def process_file(
 
         insert_at = function_index + 1
         if block_has_existing_docstring(file_lines, insert_at):
-            click.echo(f"Function at line {function_index + 1}\
-            already has a docstring!", err=True)
-            continue
+            if replace_existing_docstring:
+                if strip_existing_docstring(file_lines, function_index):
+                    # click.echo(f"Existing docstring removed at \
+                    #            {function_index + 1}.")
+                    offset -= 1
+                #
+                # else:
+                #     click.echo(f"Couldn't strip existing docstring at \
+                #                {function_index + 1}.", err=True)
+
+            else:
+                # click.echo(f"Function at line \
+                #            {function_index + 1} already has a docstring.",
+                #            err=True
+                #            )
+                continue
 
         code_snippet = dedent(
             "".join(file_lines[start_sequence + 1: end_sequence]).strip()
@@ -118,8 +133,7 @@ def process_file(
     with open(file_path, "w", encoding="utf-8") as file:
         file.writelines(file_lines)
 
-    click.echo(f"Updated '{file_path}' with {changes} docstring(s).\
-    Inserted {total_inserted} line(s).")
+    click.echo(f"Updated '{file_path}' with {changes} docstring(s). Inserted {total_inserted} line(s).")
     return changes
 
 
@@ -128,18 +142,28 @@ def process_file(
 @click.option("--model", default="llama-3.1-8b-instant", show_default=True, help="Choose the AI model to generate docstring.")
 @click.option("--no-backup", is_flag=True, help="Choose whether a backup of the file will be generated or not.")
 @click.option("--dry-run", is_flag=True, help="Preview original file without generating docstring.")
+@click.option("--replace-existing-docstring", is_flag=True, help="Replace existing docstrings with AI generated ones.")
 def main(
-        file: str,
-        model: str,
-        no_backup: bool,
-        dry_run: bool
+    file: str,
+    model: str,
+    no_backup: bool,
+    dry_run: bool,
+    replace_existing_docstring: bool
 ):
     if not os.getenv("GROQ_API_KEY"):
         click.echo(
             "GROQ_API_KEY is not set. Define it as an environment variable", err=True)
         sys.exit(1)
 
-    process_file(file, model=model, dry_run=dry_run, do_backup=not no_backup)
+    process_file(
+        file_path=file,
+        model=model,
+        dry_run=dry_run,
+        do_backup=not no_backup,
+        replace_existing_docstring=replace_existing_docstring
+    )
+    if not dry_run:
+        remove_docstring_sequences(file)
 
 
 if __name__ == "__main__":
