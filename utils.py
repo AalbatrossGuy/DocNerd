@@ -3,15 +3,48 @@
 
 import re
 import click
+from dataclasses import dataclass
+from typing import Literal, Dict, Optional, Tuple
 
-START_SEQUENCE = re.compile(r"^\s*#\s*DOCSTRING\s*START\s*$", re.IGNORECASE)
-END_SEQUENCE = re.compile(r"^\s*#\s*DOCSTRING\s*END\s*$", re.IGNORECASE)
+##############################################################################
+# START_SEQUENCE = re.compile(r"^\s*#\s*DOCSTRING\s*START\s*$", re.IGNORECASE)
+# END_SEQUENCE = re.compile(r"^\s*#\s*DOCSTRING\s*END\s*$", re.IGNORECASE)
+START_SEQUENCE = re.compile(
+    r"^\s*(?:#|//|/\*)\s*DOCSTRING\s*START\s*(?:\*/)?\s*$",
+    re.IGNORECASE,
+)
+END_SEQUENCE = re.compile(
+    r"^\s*(?:#|//|/\*)\s*DOCSTRING\s*END\s*(?:\*/)?\s*$",
+    re.IGNORECASE,
+)
+
 FUNCTION_SEQUENCE = re.compile(r"^\s*(async\s+def|def)\s+\w+\s*\(.*\)\s*:\s*$")
 PYTHON_DOCSTRING_SEQUENCE = re.compile(r'^\s*(?P<q>["\']{3})')
 FUNCTION_SEQUENCE_START = re.compile(
     r'^\s*(async\s+def|def)\s+[A-Za-z_][A-Za-z0-9_]*\s*\('
 )
 FUNCTION_SEQUENCE_END = re.compile(r'\)\s*(->\s*[^:]+)?\s*:\s*(#.*)?$')
+MULTILANG_COMMENT_OPEN = re.compile(r"^\s*/\*\*?")
+MULTILANG_COMMENT_CLOSE = re.compile(r"\*/")
+##############################################################################
+
+
+@dataclass(frozen=True)
+class LanguageCommentStyling:
+    opening_comment: str
+    line_prefix: str
+    closing_comment: str
+    comment_positioning: Literal["after_braces", "before_function_definition"]
+
+
+per_language_comment_styling: Dict[str, LanguageCommentStyling] = {
+    "c":     LanguageCommentStyling("/*", " * ", " */", "after_braces"),
+    "cpp":   LanguageCommentStyling("/*", " * ", " */", "after_braces"),
+    "java":  LanguageCommentStyling("/*", " * ", " */", "after_braces"),
+    "js":    LanguageCommentStyling("/*", " * ", " */", "after_braces"),
+    "ts":    LanguageCommentStyling("/*", " * ", " */", "after_braces"),
+    "rust":  LanguageCommentStyling("", "/// ", "", "before_function_definition"),
+}
 
 
 def find_sequence_pairs(file_lines: str):
@@ -74,6 +107,54 @@ def block_has_existing_docstring(
     if insert_at < len(file_lines) and \
             PYTHON_DOCSTRING_SEQUENCE.match(file_lines[insert_at].lstrip()):
         return True
+
+    return False
+
+
+def multilang_block_has_existing_docstring(
+        file_lines: list[str],
+        after_brace_line: int
+) -> bool:
+
+    index = after_brace_line + 1
+
+    while index < len(file_lines) and (
+        file_lines[index].strip() == "" or
+        file_lines[index].lstrip().startswith("//")
+    ):
+        index += 1
+
+    return (
+        index < len(file_lines)
+        and MULTILANG_COMMENT_OPEN.match(file_lines[index].lstrip())
+        is not None
+    )
+
+
+def multilang_strip_existing_docstring(
+        file_lines: list[str],
+        after_brace_line: int
+) -> bool:
+
+    index = after_brace_line + 1
+
+    while index < len(file_lines) and (
+        file_lines[index].strip() == ""
+        or file_lines[index].lstrip().startswith("//")
+    ):
+        index += 1
+
+    if index < len(file_lines) and \
+            MULTILANG_COMMENT_OPEN.match(file_lines[index].lstrip()):
+        j = index + 1
+
+        while j < len(file_lines) and not\
+                MULTILANG_COMMENT_CLOSE.search(file_lines[j]):
+            j += 1
+
+        if j < len(file_lines):
+            del file_lines[index: j + 1]
+            return True
 
     return False
 
@@ -155,3 +236,139 @@ def remove_docstring_sequences(file_path: str):
 
     with open(file_path, "w", encoding="utf-8") as file:
         file.writelines(new_lines)
+
+
+def strip_comments(
+    string: str,
+    in_block_comment: bool
+) -> Tuple[str, bool]:
+    index: int = 0
+    out: list = []
+
+    while index < len(string):
+        if in_block_comment:
+            if index + 1 < len(string) and string[index] == "*" and \
+                    string[index + 1] == "/":
+                in_block_comment = False
+                index += 2
+            else:
+                index += 2
+            continue
+
+        if index + 1 < len(string) and string[index] == "/" and \
+                string[index + 1] == "/":
+            break
+
+        if index + 1 < len(string) and string[index] == "/" and \
+                string[index + 1] == "*":
+            in_block_comment = True
+            index += 2
+            continue
+
+        out.append(string[index])
+        index += 1
+
+    return "".join(out), in_block_comment
+
+
+def find_open_brace_line_index(
+    file_lines: list[str],
+    start_line: int,
+    end_line: int
+) -> Optional[int]:
+    in_block_comment = False
+    while start_line < end_line:
+        code_block, in_block_comment = strip_comments(
+            file_lines[start_line],
+            in_block_comment
+        )
+
+        if "{" in code_block:
+            return start_line
+        start_line += 1
+    return None
+
+
+def insert_documentation_block(
+    file_lines: list[str],
+    language: str,
+    function_index: int,
+    docstring: str
+) -> int:
+    style = per_language_comment_styling.get(language)
+    if style is None:
+        return 0
+
+    if not docstring.endswith("\n"):
+        docstring += "\n"
+    docstring += "\nGenerated by DocNerd"
+
+    if style.comment_positioning == "after_braces":
+        brace_line = find_open_brace_line_index(
+            file_lines=file_lines,
+            start_line=function_index,
+            end_line=len(file_lines) - 1
+        )
+        if brace_line is None:
+            return 0
+        indent = " " * 4
+
+        block: int = []
+        if style.opening_comment:
+            block.append(f"{indent}{style.opening_comment}\n")
+
+        for ln in docstring.splitlines():
+            block.append(f"{indent}{style.line_prefix}{ln.rstrip()}\n")
+
+        if style.closing_comment:
+            block.append(f"{indent}{style.closing_comment}\n")
+
+        file_lines[brace_line + 1: brace_line + 1] = block
+        return len(block)
+
+    function_indent = len(file_lines[function_index]) - \
+        len(file_lines[function_index].lstrip())
+    indent = " " * function_indent
+    block = [f"{indent}{style.line_prefix}{
+        ln.rstrip()}\n" for ln in docstring.splitlines()]
+    file_lines[function_index: function_index] = block
+    return len(block)
+
+
+def multilang_function_line(
+        file_lines: list[str],
+        start_line: int,
+        end_line: int
+) -> int | None:
+
+    while start_line <= end_line:
+        line = file_lines[start_line]
+
+        if not line.strip() or line.lstrip().startswith(('#', '//')):
+            start_line += 1
+            continue
+
+        if '(' in line:
+            parenthesis_balance = line.count('(') - line.count(')')
+            j = start_line
+            while j <= end_line:
+                if j > start_line:
+                    parenthesis_balance += file_lines[j].count(
+                        '(') - file_lines[j].count(')')
+                if parenthesis_balance <= 0:
+                    comment_end_line = j
+                    k = comment_end_line
+                    while k <= end_line:
+                        texts = file_lines[k].strip()
+                        if not texts or texts.startswith('//'):
+                            k += 1
+                            continue
+                        if '{' in texts:
+                            return comment_end_line
+                        if ';' in texts:
+                            break
+                        k += 1
+                    break
+                j += 1
+        start_line += 1
+    return None

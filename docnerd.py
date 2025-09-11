@@ -5,25 +5,66 @@ import os
 import sys
 import click
 from groq import Groq
+from prompts import prompts
 from textwrap import dedent
 from dotenv import load_dotenv
 from utils import remove_docstring_sequences
 from utils import insert_docstring_in_function
+from utils import find_open_brace_line_index
 from utils import find_sequence_pairs, function_line
+from utils import insert_documentation_block
+from utils import multilang_block_has_existing_docstring
 from utils import block_has_existing_docstring, strip_existing_docstring
+from utils import multilang_strip_existing_docstring, multilang_function_line
 
 load_dotenv()
 
 
-def docnerd(code: str, model="llama-3.1-8b-instant") -> str:
+def get_language_from_extension(file_path: str) -> str:
+    _file_extension: str = os.path.splitext(file_path)[1].lower()
+    return {
+        ".py": "python",
+        ".c": "c",
+        ".h": "c",
+        ".cpp": "cpp",
+        ".cc": "cpp",
+        ".hpp": "cpp",
+        ".java": "java",
+        ".js": "js",
+        ".ts": "ts",
+        ".rs": "rust",
+    }.get(_file_extension, "")
+
+
+def docnerd(code: str, language: str, model="llama-3.1-8b-instant") -> str:
     client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-    SYSTEM = (
-        "You write concise and precise google-styled python docstrings. "
-        "Given a function or a code block, return ONLY the docstring content\
-        (no triple quotes or fences)."
-    )
-    USER = f"Write a google-styled docstring for this function:\n\n```python\n{
-        code}\n```"
+    if language == "python":
+        SYSTEM = prompts.get("python")
+        USER = (
+            "Write a Google-style Python docstring body for this"
+            f" function:\n\n```python\n{code}\n```"
+        )
+
+    elif language in {"c", "cpp", "java", "js", "ts"}:
+        SYSTEM = prompts.get("others")
+
+        language_guardrails = (
+            "c" if language in {"c", "cpp"} else
+            "java" if language == "java" else
+            "javascript"
+        )
+
+        USER = (
+            "Write a Doxygen/JSDoc-style comment body for this "
+            f"function:\n\n```{language_guardrails}\n{code}\n```"
+        )
+
+    elif language == "rust":
+        SYSTEM = prompts.get("rust")
+        USER = (
+            "Write a Rustdoc comment body for this "
+            f"function:\n\n```rust\n{code}\n```"
+        )
 
     response = client.chat.completions.create(
         model=model,
@@ -40,13 +81,17 @@ def docnerd(code: str, model="llama-3.1-8b-instant") -> str:
     )
 
     docstring = response.choices[0].message.content.strip()
-    docstring = docstring.strip("`")
+    docstring = docstring.strip("`").strip()
 
     if docstring.startswith('"""') and docstring.endswith('"""'):
         docstring = docstring[3:-3].strip()
 
     if docstring.startswith("'''") and docstring.endswith("'''"):
         docstring = docstring[3:-3].strip()
+
+    if docstring.startswith("/*") and docstring.endswith("*/"):
+        inner = docstring[2:-2].strip()
+        docstring = "\n".join(line.lstrip(" *") for line in inner.splitlines())
 
     return docstring
 
@@ -61,6 +106,10 @@ def process_file(
     with open(file_path, "r", encoding="utf-8") as file:
         file_lines = file.readlines()
 
+    language = get_language_from_extension(file_path)
+    if not language:
+        click.echo(f"Unsupported file type: {file_path}", err=True)
+
     changes = 0
     total_inserted = 0
     start_end_pairs = list(find_sequence_pairs(file_lines))
@@ -73,45 +122,90 @@ def process_file(
         start_sequence += offset
         end_sequence += offset
 
-        function_index = function_line(
-            file_lines, start_sequence, end_sequence
-        )
+        if language == "python":
+            function_index = function_line(
+                file_lines, start_sequence, end_sequence
+            )
+        else:
+            function_index = multilang_function_line(
+                file_lines, start_sequence, end_sequence
+            )
         if function_index is None:
             click.echo(f"No Function definition found between lines \
                        {start_sequence+1}–{end_sequence+1}.", err=True
                        )
             continue
 
-        insert_at = function_index + 1
-        if block_has_existing_docstring(file_lines, insert_at):
-            if replace_existing_docstring:
-                if strip_existing_docstring(file_lines, function_index):
-                    # click.echo(f"Existing docstring removed at \
-                    #            {function_index + 1}.")
-                    offset -= 1
-                #
-                # else:
-                #     click.echo(f"Couldn't strip existing docstring at \
-                #                {function_index + 1}.", err=True)
+        if language == "python":
+            insert_at = function_index + 1
+            if block_has_existing_docstring(file_lines, insert_at):
+                if replace_existing_docstring:
+                    if strip_existing_docstring(file_lines, function_index):
+                        # click.echo(f"Existing docstring removed at \
+                        #            {function_index + 1}.")
+                        offset -= 1
+                    #
+                    # else:
+                    #     click.echo(f"Couldn't strip existing docstring at \
+                    #                {function_index + 1}.", err=True)
 
-            else:
-                # click.echo(f"Function at line \
-                #            {function_index + 1} already has a docstring.",
-                #            err=True
-                #            )
-                continue
+                else:
+                    # click.echo(f"Function at line \
+                    #            {function_index + 1} already has a docstring."
+                    #            err=True
+                    #            )
+                    continue
+
+        else:
+            if language in ["c", "cpp", "java", "js", "ts"]:
+                get_brace_line = find_open_brace_line_index(
+                    file_lines=file_lines,
+                    start_line=function_index,
+                    end_line=len(file_lines) - 1
+                )
+                if get_brace_line is None:
+                    click.echo(
+                        f"Could't find '{{' braces at {function_index + 1}",
+                        err=True
+                    )
+                    continue
+
+                if multilang_block_has_existing_docstring(
+                    file_lines,
+                    get_brace_line
+                ):
+                    if replace_existing_docstring:
+                        multilang_strip_existing_docstring(
+                            file_lines, get_brace_line
+                        )
+                        offset -= 1
+                    else:
+                        continue
 
         code_snippet = dedent(
             "".join(file_lines[start_sequence + 1: end_sequence]).strip()
         )
         try:
-            doc = docnerd(code_snippet, model=model)
+            doc = docnerd(code_snippet, language=language, model=model)
         except Exception as e:
             click.echo(f"Error from Groq (lines {start_sequence + 1}–\
             {end_sequence + 1}): {e}", err=True)
             continue
 
-        added = insert_docstring_in_function(file_lines, function_index, doc)
+        if language == "python":
+            added = insert_docstring_in_function(
+                file_lines=file_lines,
+                function_index=function_index,
+                docstring=doc
+            )
+
+        else:
+            added = insert_documentation_block(
+                file_lines=file_lines,
+                language=language,
+                function_index=function_index,
+                docstring=doc
+            )
         total_inserted += added
         changes += 1
         offset += added
@@ -133,7 +227,8 @@ def process_file(
     with open(file_path, "w", encoding="utf-8") as file:
         file.writelines(file_lines)
 
-    click.echo(f"Updated '{file_path}' with {changes} docstring(s). Inserted {total_inserted} line(s).")
+    click.echo(f"Updated '{file_path}' with {
+               changes} docstring(s). Inserted {total_inserted} line(s).")
     return changes
 
 
@@ -155,14 +250,14 @@ def main(
             "GROQ_API_KEY is not set. Define it as an environment variable", err=True)
         sys.exit(1)
 
-    process_file(
+    changes_logged = process_file(
         file_path=file,
         model=model,
         dry_run=dry_run,
         do_backup=not no_backup,
         replace_existing_docstring=replace_existing_docstring
     )
-    if not dry_run:
+    if not dry_run and changes_logged:
         remove_docstring_sequences(file)
 
 
