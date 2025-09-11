@@ -1,5 +1,5 @@
 # 🤓 DocNerd
-An AI docstring generator because I find writing docstrings a big bore. Supports only python files for now.
+An AI docstring generator because I find writing docstrings a big bore. Now has support for Python, Rust, C & it's header files, C++ & it's header files, JavaScript, TypeScript & Java.
 
 # Installation
 1. CLone the repository and create a `.env` file
